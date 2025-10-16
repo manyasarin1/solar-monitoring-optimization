@@ -218,3 +218,6 @@ __pycache__/
 !pinn/runs/*/*.png
 !pinn/analysis_results/
 
+# Ignore temporary PINN training logs
+pinn/*.dat
+
