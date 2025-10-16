@@ -1,75 +1,52 @@
 import os
-import numpy as np
 import pandas as pd
-import re
+import numpy as np
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FEATURES_DIR = os.path.join(BASE_DIR, "../features")
-DATA_PROC_DIR = os.path.join(BASE_DIR, "../data_proc")
-OUTPUT_DIR = os.path.join(BASE_DIR, "data_ready")
-
+# ============================
+# CONFIGURATION
+# ============================
+DATA_DIR = "../features"        # where your clean/noisy/sparse/rural CSVs are
+OUTPUT_DIR = "./data_ready"     # where NPZ files will be saved
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print("🔍 Scanning folders for all city–quarter–scenario datasets...\n")
 
-cities = ["chennai", "delhi", "jaipur", "leh"]
-quarters = ["q1", "q2", "q3", "q4"]
-scenarios = ["clean", "sparse", "noisy", "rural"]
+# ============================
+# TARGET COLUMN NAMES (order)
+# ============================
+# [Solar, Temp, Wind, Pressure, PanelTemp, Efficiency]
+EXPECTED_COLS = ["SW", "T2M", "WS10M", "PS", "Tp", "eta"]
 
-def read_flexible_csv(fpath):
-    """Auto-detects delimiter, skips NASA header, and normalizes column names."""
-    # Find where the header starts
-    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.readlines()
-    start_line = 0
-    for i, line in enumerate(lines):
-        if "YEAR" in line:
-            start_line = i
-            break
+# ============================
+# MAIN LOOP
+# ============================
+for fname in os.listdir(DATA_DIR):
+    if not fname.endswith(".csv"):
+        continue
 
-    # Try comma or whitespace separator
-    try:
-        df = pd.read_csv(fpath, skiprows=start_line, sep=",")
-        if len(df.columns) == 1:
-            df = pd.read_csv(fpath, skiprows=start_line, delim_whitespace=True)
-    except Exception:
-        df = pd.read_csv(fpath, skiprows=start_line, delim_whitespace=True)
+    fpath = os.path.join(DATA_DIR, fname)
+    df = pd.read_csv(fpath, skiprows=18, header=None)  # treat all rows as data
 
-    # Clean column names — remove units and brackets
-    df.columns = [re.sub(r"\s*\[.*?\]", "", c).strip() for c in df.columns]
-    return df
+    # Clean up empty columns
+    df = df.dropna(axis=1, how='all')
+    df = df.select_dtypes(include=[np.number])
 
-for city in cities:
-    for q in quarters:
-        for s in scenarios:
-            fname = f"{city}_{q}_{s}.csv"
-            fpaths = [
-                os.path.join(FEATURES_DIR, fname),
-                os.path.join(DATA_PROC_DIR, fname),
-            ]
-            fpath = next((fp for fp in fpaths if os.path.exists(fp)), None)
-            if not fpath:
-                print(f"❌ Missing: {fname}")
-                continue
+    if df.shape[1] < 6:
+        print(f"⚠️ Not enough usable columns in {fname}")
+        continue
 
-            try:
-                df = read_flexible_csv(fpath)
-            except Exception as e:
-                print(f"⚠️ Error reading {fname}: {e}")
-                continue
+    # Rename first 6 columns to standard names
+    df = df.iloc[:, :6]
+    df.columns = EXPECTED_COLS
 
-            needed_cols = ["ALLSKY_SFC_SW_DWN", "T2M", "WS10M", "PS", "WSC"]
-            cols = [c for c in needed_cols if c in df.columns]
+    # Split into inputs and outputs
+    X = df.iloc[:, :4].to_numpy(dtype=np.float32)
+    y = df.iloc[:, 4:].to_numpy(dtype=np.float32)
 
-            if not cols:
-                print(f"⚠️ Missing usable columns in {fname}")
-                print("   → Found columns:", df.columns.tolist()[:10])
-                continue
+    outname = fname.replace(".csv", ".npz")
+    outpath = os.path.join(OUTPUT_DIR, outname)
+    np.savez_compressed(outpath, X=X, y=y)
 
-            arr = df[cols].to_numpy(dtype=np.float32)
-            outname = fname.replace(".csv", ".npz")
-            outpath = os.path.join(OUTPUT_DIR, outname)
-            np.savez_compressed(outpath, data=arr)
-            print(f"✅ Saved {outname} → from {fname}")
+    print(f"✅ Saved {outname}  →  {outpath}")
 
-print("\n🎉 All clean + simulated datasets converted — check pinn/data_ready/")
+print("\n🎉 All clean + simulated datasets converted successfully — check pinn/data_ready/")
