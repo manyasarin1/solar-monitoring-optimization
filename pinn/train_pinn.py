@@ -1,118 +1,117 @@
 import os
-import glob
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import matplotlib.pyplot as plt
+import deepxde as dde
+from deepxde.backend import tf
 
-from pinn_model import PINN, physics_residual
-from utils_pinn import load_npz, make_time, normalize_train, apply_norm, weak_label_tp, to_tensor
+# ----------------------------------------------------------------------
+# Paths
+# ----------------------------------------------------------------------
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data_ready")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "runs")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DATA_DIR = "data_ready"
-OUT_DIR = "runs"
-os.makedirs(OUT_DIR, exist_ok=True)
+print("\n🚀 Starting PINN training for all datasets in data_ready...\n")
 
-# ----- training hyperparams -----
-LR = 1e-3
-EPOCHS = 3000
-PHYS_W = 1.0      # weight for physics loss
-WEAK_W = 0.2      # weight for weak-label loss (can set 0 if you want pure physics)
-PRINT_EVERY = 200
+# ----------------------------------------------------------------------
+# Loop through all .npz files
+# ----------------------------------------------------------------------
+for fname in sorted(os.listdir(DATA_DIR)):
+    if not fname.endswith(".npz"):
+        continue
 
-def train_one_file(npz_path):
-    name = os.path.basename(npz_path).replace(".npz", "")
-    print(f"\n==== Training on {name} ====")
+    city, quarter, scenario = fname.replace(".npz", "").split("_")
+    label = f"{city.upper()} {quarter.upper()} — {scenario.upper()}"
+    print(f"⚡ Training PINN for {label}")
 
-    # Load data: columns assumed order [I, T2M, WS10M, PS, WSC]
-    arr = load_npz(npz_path)
-    I   = arr[:, 0:1]
-    Ta  = arr[:, 1:2]
-    v   = arr[:, 2:3]
-    # PS, WSC are available if you want to extend the model inputs later
+    # ------------------------------------------------------------------
+    # Load dataset
+    # ------------------------------------------------------------------
+    data = np.load(os.path.join(DATA_DIR, fname))
+    X = data["X"]
+    y = data["y"]
+    print(f"📦 {fname}: X={X.shape}, y={y.shape}")
 
-    n = len(arr)
-    t  = make_time(n, dt_hours=1.0)  # naive time index
-    X  = np.hstack([t, I, Ta, v])    # [t, I, Ta, v]
+    # ------------------------------------------------------------------
+    # Define geometry (safe for any dimension)
+    # ------------------------------------------------------------------
+    xmin = X.min(axis=0)
+    xmax = X.max(axis=0)
 
-    # Normalize inputs (time & features)
-    Xn, xstats = normalize_train(X)
-
-    # Weak label for Tp to guide training (can be set WEAK_W=0 to turn off)
-    Tp_weak = weak_label_tp(I.squeeze(1), Ta.squeeze(1), v.squeeze(1))  # [N,1]
-
-    # Tensors
-    Xn_t, Tp_weak_t = to_tensor(Xn, Tp_weak, device=DEVICE)
-
-    # Model
-    model = PINN(in_dim=4, hidden=128, depth=6).to(DEVICE)
-    opt = optim.Adam(model.parameters(), lr=LR)
-    mse = nn.MSELoss()
-
-    # Training
-    for ep in range(1, EPOCHS + 1):
-        opt.zero_grad()
-
-        Tp_pred = model(Xn_t)                               # data-driven head
-        # physics
-        phys_eq = physics_residual(model, Xn_t, alpha=0.03, beta=0.02, gamma=0.02)
-        loss_phys = torch.mean(phys_eq**2)
-
-        # weak label supervision
-        loss_weak = mse(Tp_pred, Tp_weak_t)
-
-        loss = PHYS_W * loss_phys + WEAK_W * loss_weak
-        loss.backward()
-        opt.step()
-
-        if ep % PRINT_EVERY == 0 or ep == 1:
-            print(f"[{ep:4d}] total={loss.item():.5f}  phys={loss_phys.item():.5f}  weak={loss_weak.item():.5f}")
-
-    # Save model + quick plot
-    mdl_dir = os.path.join(OUT_DIR, name)
-    os.makedirs(mdl_dir, exist_ok=True)
-    torch.save(model.state_dict(), os.path.join(mdl_dir, "pinn.pt"))
-    np.save(os.path.join(mdl_dir, "xstats.npy"), xstats, allow_pickle=True)
-
-    # Plot: Tp_pred vs weak label (as a sanity curve)
-    with torch.no_grad():
-        Tp_pred_np = Tp_pred.detach().cpu().numpy()
-    plt.figure()
-    plt.plot(Tp_weak.squeeze(), label="weak Tp", linewidth=1)
-    plt.plot(Tp_pred_np.squeeze(), label="PINN Tp", linewidth=1)
-    plt.title(f"{name}: Tp (weak vs PINN)")
-    plt.xlabel("t (samples)")
-    plt.ylabel("Temperature (°C, relative scale)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(mdl_dir, "tp_curve.png"))
-    plt.close()
-
-    # Save a CSV for judges
-    out_csv = os.path.join(mdl_dir, "tp_preds.csv")
-    np.savetxt(out_csv, np.hstack([Tp_weak, Tp_pred_np]), delimiter=",", header="tp_weak,tp_pinn", comments="")
-    print(f"✅ Saved: {mdl_dir}")
-
-def main():
-    # choose a small demo subset first (you can broaden later)
-    # e.g., Chennai Q1 across 4 scenarios
-    subset = [
-        "chennai_q1_clean.npz",
-        "chennai_q1_sparse.npz",
-        "chennai_q1_noisy.npz",
-        "chennai_q1_rural.npz",
-    ]
-    # If you want to train all files, uncomment next line:
-    # subset = [os.path.basename(p) for p in glob.glob(os.path.join(DATA_DIR, "*.npz"))]
-
-    for base in subset:
-        npz_path = os.path.join(DATA_DIR, base)
-        if os.path.exists(npz_path):
-            train_one_file(npz_path)
+    print("Feature ranges:")
+    for i in range(len(xmin)):
+        delta = xmax[i] - xmin[i]
+        if delta <= 0:
+            print(f"⚠️  Column {i} constant; expanding artificially.")
+            xmin[i] -= 1e-3
+            xmax[i] += 1e-3
         else:
-            print(f"⚠️ Skipping missing file: {npz_path}")
+            print(f"  dim {i}: Δ={delta}")
 
-if __name__ == "__main__":
-    main()
+    geom = dde.geometry.Hypercube(xmin, xmax)
+    print(f"   Geometry OK: xmin={xmin}, xmax={xmax}")
 
+    # ------------------------------------------------------------------
+    # 🧠 DEFINE THE SOLAR ENERGY-BALANCE PDE  ← main change starts here
+    # ------------------------------------------------------------------
+    def pde(x, y):
+        """
+        Physics: Energy balance on a solar panel surface.
+        Cp * dTp/dt = G*(1 - ηopt) - hc*(Tp - Ta) - σ*ε*(Tp^4 - Ta^4)
+        """
+        # Predicted outputs
+        Tp_pred = y[:, 0:1]    # panel temperature
+        eta_pred = y[:, 1:2]   # panel efficiency
+
+        # Extract relevant inputs (columns from X)
+        # [solar_radiation, air_temp, wind_speed, pressure]
+        G = x[:, 0:1]
+        Ta = x[:, 1:2]
+
+        # Physical constants (approximate)
+        Cp = 900.0        # J/kg·K - effective heat capacity
+        hc = 0.02         # W/m²·K - convective heat coefficient
+        sigma = 5.67e-8   # W/m²·K⁴ - Stefan–Boltzmann constant
+        eps = 0.9         # emissivity
+        eta_opt = 0.15    # optical efficiency
+
+        # Compute dTp/dt via automatic differentiation
+        dTp_dt = dde.grad.jacobian(y, x, i=0, j=0)  # derivative wrt first input (G)
+        # You can later adjust j depending on which input represents time if added
+
+        # Energy balance residual
+        residual = Cp * dTp_dt - (
+            G * (1 - eta_opt)
+            - hc * (Tp_pred - Ta)
+            - sigma * eps * (Tp_pred**4 - Ta**4)
+        )
+        return [residual]
+    # ------------------------------------------------------------------
+    # 🧠 END OF PDE DEFINITION
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Define and train model
+    # ------------------------------------------------------------------
+    net = dde.nn.FNN([4, 64, 64, 64, 2], "tanh", "Glorot normal")
+    data_obj = dde.data.PDE(geom, pde, [], num_domain=1000)
+    model = dde.Model(data_obj, net)
+    model.compile("adam", lr=1e-3)
+    losshistory, train_state = model.train(epochs=1000, display_every=200)
+
+    # ------------------------------------------------------------------
+    # Save results
+    # ------------------------------------------------------------------
+    run_dir = os.path.join(OUTPUT_DIR, fname.replace(".npz", ""))
+    os.makedirs(run_dir, exist_ok=True)
+    dde.saveplot(losshistory, train_state, issave=False, isplot=False)
+    np.savez(
+        os.path.join(run_dir, "results.npz"),
+        X=X,
+        y_true=y,
+        y_pred=model.predict(X),
+    )
+
+    print(f"✅ Finished training {label}")
+    print("-" * 60)
+
+print("\n🎉 All PINN trainings complete! Check results in 'runs/' directory.\n")
