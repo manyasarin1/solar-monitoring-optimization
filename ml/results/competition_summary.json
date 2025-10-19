@@ -1,0 +1,30 @@
+{
+  "test_timestamp": "2025-10-20T03:41:51.158384",
+  "total_scenarios_tested": 12,
+  "random_forest_wins": 12,
+  "xgboost_wins": 0,
+  "best_overall_model": "Random Forest",
+  "best_rf_performance": {
+    "city": "chennai",
+    "scenario": "noisy",
+    "rmse": 0.02040336764162165
+  },
+  "best_xgb_performance": {
+    "city": "chennai",
+    "scenario": "sparse",
+    "rmse": 0.036426675026618754
+  },
+  "average_performance_by_scenario": {
+    "rf_rmse": {
+      "noisy": 0.024359651430653627,
+      "rural": 0.02739105888445521,
+      "sparse": 0.030303002571336286
+    },
+    "xgb_rmse": {
+      "noisy": 0.13460131835730807,
+      "rural": 0.1545231222351664,
+      "sparse": 0.1568086638435317
+    }
+  },
+  "key_insight": "Random Forest consistently outperforms XGBoost across rural scenarios"
+}

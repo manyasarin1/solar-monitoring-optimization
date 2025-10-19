@@ -1,0 +1,21 @@
+{
+  "features_used": [
+    "T2M",
+    "ALLSKY_SFC_SW_DWN",
+    "WS10M",
+    "HR",
+    "MO"
+  ],
+  "target_column": "panel_temperature",
+  "training_samples": 28070,
+  "validation_samples": 7018,
+  "random_forest_val_rmse": 0.030081390288015732,
+  "xgboost_available": true,
+  "cities_included": [
+    "chennai",
+    "delhi",
+    "jaipur",
+    "leh"
+  ],
+  "xgboost_val_rmse": 0.19915147746071668
+}
